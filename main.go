@@ -96,12 +96,11 @@ Usage:
 	defer file.Close()
 
 	dfile := file.Name()
-	base := filepath.Base(lpath)
 	for _, v := range goVers {
 		const dockerTmpl = `FROM golang:%[1]s
-COPY %[3]s %[3]s
-RUN cd %[3]s && %[4]s`
-		err = overwrite(file, fmt.Sprintf(dockerTmpl, v, base, lpath, *cmd))
+COPY %[2]s %[2]s
+RUN cd %[2]s && %[3]s`
+		err = overwrite(file, fmt.Sprintf(dockerTmpl, v, lpath, *cmd))
 		if err != nil {
 			errorf("(re-)writing Dockerfile failed: %s\n", err)
 			return 1
