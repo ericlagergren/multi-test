@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,14 +18,18 @@ var (
 	cmd  = flag.String("cmd", "go test -v", "command to run")
 	vers = flag.String("tags", "1.7,1.8,1.9,latest", "comma-delimited versions to test")
 	dimg = flag.String("name", "golang", "docker image name to use")
-	logf = flag.String("file", "", "file to write rsync/Docker output to (stdout, stderr accepted)")
+	logf = flag.String("file", "", "file to write Docker output to (stdout, stderr accepted)")
 
 	cmdOut io.Writer
 )
 
-func main() { os.Exit(Main()) }
+func main() {
+	if err := Main(); err != nil {
+		log.Fatal(err)
+	}
+}
 
-func Main() int {
+func Main() error {
 	flag.Usage = func() {
 		const usage = `multi-test: test multiple Go version and GOARCH combinations.
 
@@ -45,19 +50,24 @@ Usage:
 	default:
 		file, err := os.Create(*logf)
 		if err != nil {
-			log.Fatalf("error opening logf: %s\n", err)
+			return fmt.Errorf("error opening logf: %s\n", err)
 		}
+		defer file.Close()
 		cmdOut = file
 	}
 
 	if *pkg == "" {
-		log.Fatal("pkg flag must be set")
+		return errors.New("pkg flag must be set")
 	}
 
-	lpath := filepath.Join("src", *pkg)
-	fpath := filepath.Join(os.Getenv("GOPATH"), lpath)
-	if _, err := os.Stat(fpath); os.IsNotExist(err) {
-		log.Fatalf("could not find pkg: %q", fpath)
+	pkgPath := filepath.Join("src", *pkg)
+	absPath := filepath.Join(os.Getenv("GOPATH"), pkgPath)
+
+	if _, err := os.Stat(absPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("could not find pkg: %q", absPath)
+		}
+		return fmt.Errorf("error calling stat: %s", err)
 	}
 
 	tags := strings.Split(*vers, ",")
@@ -67,56 +77,52 @@ Usage:
 
 	tempd, err := ioutil.TempDir("", "_testdir")
 	if err != nil {
-		log.Fatalf("could not create tempdir: %s\n", err)
+		return fmt.Errorf("could not create tempdir: %s\n", err)
 	}
+	// Don't worry about removing child files as they'll get nuked when tempd
+	// does.
 	defer os.RemoveAll(tempd)
 
 	if err := os.Chdir(tempd); err != nil {
-		errorf("could not chdir to %q: %s\n", tempd, err)
-		return 1
+		return fmt.Errorf("could not chdir to %q: %s\n", tempd, err)
 	}
 
-	if err := os.MkdirAll(lpath, 0777); err != nil {
-		errorf("could not mkdirall %q: %s\n", lpath, err)
-		return 1
+	// e.g., src/github.com/acmecorp/widget
+	if err := os.MkdirAll(pkgPath, 0777); err != nil {
+		return fmt.Errorf("could not mkdirall %q: %s\n", pkgPath, err)
 	}
 
-	cleanup, err := loadFiles(lpath, fpath)
+	cleanup, err := loadFiles(pkgPath, absPath)
 	if err != nil {
-		errorf("loading files failed: %s\n", err)
-		return 1
+		return fmt.Errorf("loading files failed: %s\n", err)
 	}
-	defer func() { cleanup() }()
+	defer cleanup()
 
-	file, err := ioutil.TempFile(".", "Dockerfile")
+	dfile, err := ioutil.TempFile(".", "Dockerfile")
 	if err != nil {
-		errorf("creation of a tempfile failed: %s\n", err)
-		return 1
+		return fmt.Errorf("creation of a tempfile failed: %s\n", err)
 	}
-	defer file.Close()
+	defer dfile.Close()
 
-	dfile := file.Name()
+	dfname := dfile.Name()
 	for _, tag := range tags {
-		const dockerTmpl = `FROM %[1]s:%[2]s
-COPY %[3]s %[3]s
-RUN cd %[3]s && %[4]s`
-		err = overwrite(file, fmt.Sprintf(dockerTmpl, *dimg, tag, lpath, *cmd))
+		err = writeDockerfile(dfile, *dimg, tag, pkgPath, *cmd)
 		if err != nil {
-			errorf("(re-)writing Dockerfile (%q) failed: %s\n", dfile, err)
-			return 1
+			return fmt.Errorf("(re-)writing Dockerfile (%q) failed: %s\n", dfname, err)
 		}
+
 		const commandTmpl = `set -e
 docker build -f %[1]s -t %[2]s .
 docker run --rm %[2]s
 docker rmi   -f %[2]s`
-		img := fmt.Sprintf("multi-test:%s-%s", *dimg, tag)
-		cmd := fmt.Sprintf(commandTmpl, dfile, img)
+
+		img := fmt.Sprintf("multi-test:%s-%s", *dimg, tag) // image name
+		cmd := fmt.Sprintf(commandTmpl, dfname, img)       // shell command
 		if err := run("sh", "-c", cmd); err != nil {
-			errorf("docker build/run/rmi failed: %s\n", err)
-			return 1
+			return fmt.Errorf("docker build/run/rmi failed: %s\n", err)
 		}
 	}
-	return 0
+	return nil
 }
 
 func run(cmd string, args ...string) error {
@@ -126,17 +132,17 @@ func run(cmd string, args ...string) error {
 	return c.Run()
 }
 
-func overwrite(file *os.File, content string) error {
+func writeDockerfile(file *os.File, image, tag, path, cmd string) error {
 	if err := file.Truncate(0); err != nil {
 		return err
 	}
 	if _, err := file.Seek(0, os.SEEK_SET); err != nil {
 		return err
 	}
-	_, err := file.WriteString(content)
+	// TODO: The RUN command assumes we're in $GOPATH.
+	const template = `FROM %[1]s:%[2]s
+COPY %[3]s %[3]s
+RUN cd %[3]s && %[4]s`
+	_, err := file.WriteString(fmt.Sprintf(template, image, tag, path, cmd))
 	return err
-}
-
-func errorf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, format, args...)
 }
