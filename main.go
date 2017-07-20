@@ -22,12 +22,6 @@ var (
 	cmdOut io.Writer
 )
 
-const (
-	dockerTmpl = `FROM golang:%[1]s
-COPY %[3]s %[3]s
-RUN cd %[3]s && %[4]s`
-)
-
 func main() { os.Exit(Main()) }
 
 func Main() int {
@@ -104,6 +98,9 @@ Usage:
 	dfile := file.Name()
 	base := filepath.Base(lpath)
 	for _, v := range goVers {
+		const dockerTmpl = `FROM golang:%[1]s
+COPY %[3]s %[3]s
+RUN cd %[3]s && %[4]s`
 		err = overwrite(file, fmt.Sprintf(dockerTmpl, v, base, lpath, *cmd))
 		if err != nil {
 			errorf("(re-)writing Dockerfile failed: %s\n", err)
