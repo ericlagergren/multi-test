@@ -60,8 +60,8 @@ Usage:
 		log.Fatalf("could not find pkg: %q", fpath)
 	}
 
-	goVers := strings.Split(*vers, ",")
-	if len(goVers) == 0 {
+	tags := strings.Split(*vers, ",")
+	if len(tags) == 0 {
 		log.Fatal("must provide at least 1 Go version to test")
 	}
 
@@ -96,23 +96,22 @@ Usage:
 	defer file.Close()
 
 	dfile := file.Name()
-	for _, v := range goVers {
-		const dockerTmpl = `FROM golang:%[1]s
-COPY %[2]s %[2]s
-RUN cd %[2]s && %[3]s`
-		err = overwrite(file, fmt.Sprintf(dockerTmpl, v, lpath, *cmd))
+	for _, tag := range tags {
+		const dockerTmpl = `FROM %[1]s:%[2]s
+COPY %[3]s %[3]s
+RUN cd %[3]s && %[4]s`
+		err = overwrite(file, fmt.Sprintf(dockerTmpl, *dimg, tag, lpath, *cmd))
 		if err != nil {
-			errorf("(re-)writing Dockerfile failed: %s\n", err)
+			errorf("(re-)writing Dockerfile (%q) failed: %s\n", dfile, err)
 			return 1
 		}
-		buildcmd := fmt.Sprintf(`set -euo pipefail
-			     docker build -f %[1]s -t %[2]s .
-				 docker run --rm %[2]s
-				 docker rmi   -f %[2]s`,
-			dfile,
-			fmt.Sprintf("multi-test:go%s", v),
-		)
-		if err := run("sh", "-c", buildcmd); err != nil {
+		const commandTmpl = `set -e
+docker build -f %[1]s -t %[2]s .
+docker run --rm %[2]s
+docker rmi   -f %[2]s`
+		img := fmt.Sprintf("multi-test:%s-%s", *dimg, tag)
+		cmd := fmt.Sprintf(commandTmpl, dfile, img)
+		if err := run("sh", "-c", cmd); err != nil {
 			errorf("docker build/run/rmi failed: %s\n", err)
 			return 1
 		}
