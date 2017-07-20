@@ -28,7 +28,9 @@ COPY %[3]s %[3]s
 RUN cd %[3]s && %[4]s`
 )
 
-func main() {
+func main() { os.Exit(Main()) }
+
+func Main() int {
 	flag.Usage = func() {
 		const usage = `multi-test: test multiple Go version and GOARCH combinations.
 
@@ -77,25 +79,25 @@ Usage:
 
 	if err := os.Chdir(tempd); err != nil {
 		errorf("could not chdir to %q: %s\n", tempd, err)
-		return
+		return 1
 	}
 
 	if err := os.MkdirAll(lpath, 0777); err != nil {
 		errorf("could not mkdirall %q: %s\n", lpath, err)
-		return
+		return 1
 	}
 
 	cleanup, err := loadFiles(lpath, fpath)
 	if err != nil {
 		errorf("loading files failed: %s\n", err)
-		return
+		return 1
 	}
 	defer func() { cleanup() }()
 
 	file, err := ioutil.TempFile(".", "Dockerfile")
 	if err != nil {
 		errorf("creation of a tempfile failed: %s\n", err)
-		return
+		return 1
 	}
 	defer file.Close()
 
@@ -105,7 +107,7 @@ Usage:
 		err = overwrite(file, fmt.Sprintf(dockerTmpl, v, base, lpath, *cmd))
 		if err != nil {
 			errorf("(re-)writing Dockerfile failed: %s\n", err)
-			return
+			return 1
 		}
 		buildcmd := fmt.Sprintf(`set -euo pipefail
 			     docker build -f %[1]s -t %[2]s .
@@ -116,9 +118,10 @@ Usage:
 		)
 		if err := run("sh", "-c", buildcmd); err != nil {
 			errorf("docker build/run/rmi failed: %s\n", err)
-			return
+			return 1
 		}
 	}
+	return 0
 }
 
 func run(cmd string, args ...string) error {
